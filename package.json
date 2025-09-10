@@ -1,0 +1,28 @@
+{
+  "name": "youtube",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nayankyada/youtube.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nayankyada/youtube/issues"
+  },
+  "homepage": "https://github.com/nayankyada/youtube#readme",
+  "description": "",
+  "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "ytdl-core": "^4.11.5"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}
