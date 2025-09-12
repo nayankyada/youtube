@@ -24,3 +24,14 @@ yarn-error.log*
 
 
 *.mp4
+*.mp3
+*.m4a
+*.webm
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mpeg
+*.mpg
+*.part

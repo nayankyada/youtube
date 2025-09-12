@@ -1,6 +1,5 @@
-const ytdl = require("@distube/ytdl-core");
-const fs = require("fs");
 const { exec } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 // Download mode configuration
@@ -23,58 +22,74 @@ const videos = [
   // "https://youtu.be/xldtth3rzyc",
 ];
 
-// Helper function to download a single stream
-function downloadStream(videoUrl, format, outputPath, type) {
+// Helper function to check if file exists and is not empty
+function fileExists(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.size > 0; // File exists and has content
+  } catch (error) {
+    return false; // File doesn't exist
+  }
+}
+
+// Helper function to get video title using yt-dlp with cookies
+async function getVideoTitle(videoUrl) {
   return new Promise((resolve, reject) => {
-    console.log(`Downloading ${type}...`);
-
-    const stream = ytdl(videoUrl, {
-      format: format,
-      quality: "highest",
-    });
-
-    const writeStream = fs.createWriteStream(outputPath);
-
-    stream.pipe(writeStream);
-
-    stream.on("progress", (chunkLength, downloaded, total) => {
-      const percent = (downloaded / total) * 100;
-      process.stdout.write(`\r${type} Progress: ${percent.toFixed(1)}%`);
-    });
-
-    writeStream.on("finish", () => {
-      console.log(`\n${type} downloaded: ${outputPath}`);
-      resolve();
-    });
-
-    writeStream.on("error", (error) => {
-      console.log(`\nError downloading ${type}:`, error.message);
-      reject(error);
-    });
-
-    stream.on("error", (error) => {
-      console.log(`\nStream error for ${type}:`, error.message);
-      reject(error);
+    const command = `yt-dlp --cookies-from-browser chrome --get-title --no-warnings "${videoUrl}"`;
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
     });
   });
 }
 
-// Helper function to merge video and audio with ffmpeg
-function mergeWithFFmpeg(videoPath, audioPath, outputPath) {
+// Helper function to download with yt-dlp using cookies
+async function downloadWithYtDlp(videoUrl, outputPath, mode) {
   return new Promise((resolve, reject) => {
-    const ffmpegCommand = `ffmpeg -i "${videoPath}" -i "${audioPath}" -c:v copy -c:a copy -y "${outputPath}"`;
+    let command;
+    
+    if (mode === 'audio-only') {
+      command = `yt-dlp --cookies-from-browser chrome -x --audio-format mp3 --audio-quality 0 -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
+    } else if (mode === 'video-only') {
+      command = `yt-dlp --cookies-from-browser chrome -f "best[height<=1080]" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
+    } else { // video+audio
+      command = `yt-dlp --cookies-from-browser chrome -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
+    }
 
-    console.log('Merging with ffmpeg...');
-    exec(ffmpegCommand, (error, stdout, stderr) => {
+    console.log(`Downloading with yt-dlp (using browser cookies)...`);
+    
+    exec(command, (error, stdout, stderr) => {
       if (error) {
-        console.log(`\nFFmpeg error:`, error.message);
+        console.log(`yt-dlp error:`, error.message);
         reject(error);
         return;
       }
-      console.log('\nMerging completed successfully!');
+      console.log(`Download completed!`);
       resolve();
     });
   });
+}
+
+// Helper function to retry with exponential backoff
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 2000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Add random jitter to make requests look more natural
+      const jitter = Math.random() * 1000; // 0-1000ms random delay
+      const delay = baseDelay * Math.pow(2, attempt - 1) + jitter;
+      console.log(`Attempt ${attempt} failed, retrying in ${Math.round(delay)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
 }
 
 async function downloadVideo(videoUrl, index) {
@@ -82,108 +97,41 @@ async function downloadVideo(videoUrl, index) {
     console.log(`Starting download ${index + 1}/${videos.length}...`);
     console.log(`Download mode: ${DOWNLOAD_MODE}`);
 
-    const info = await ytdl.getInfo(videoUrl);
-    const title = info.videoDetails.title;
+    // Get video title
+    const title = await retryWithBackoff(async () => {
+      return await getVideoTitle(videoUrl);
+    });
+    
     const safeTitle = title.replace(/[<>:"/\\|?*]/g, "_");
-
     console.log(`Video: ${title}`);
-    console.log(`Duration: ${info.videoDetails.lengthSeconds} seconds`);
 
-    // Get all available formats
-    const allFormats = info.formats;
-    console.log(`Total formats available: ${allFormats.length}`);
+    // Determine output path based on mode
+    let outputPath = `${safeTitle}`;
 
-    // Get highest quality video format
-    const videoFormats = ytdl.filterFormats(allFormats, 'videoonly')
-      .sort((a, b) => {
-        const qualityA = parseInt(a.qualityLabel) || 0;
-        const qualityB = parseInt(b.qualityLabel) || 0;
-        return qualityB - qualityA;
-      });
-
-    // Get highest quality audio format
-    const audioFormats = ytdl.filterFormats(allFormats, 'audioonly')
-      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-
-    console.log(`Found ${videoFormats.length} video-only formats`);
-    console.log(`Found ${audioFormats.length} audio-only formats`);
-
-    // Try to get the highest quality combined format first
-    const combinedFormats = ytdl.filterFormats(allFormats, 'videoandaudio');
-    console.log(`Found ${combinedFormats.length} video+audio formats`);
-
-    let bestCombinedFormat = combinedFormats
-      .filter(format => format.hasVideo && format.hasAudio)
-      .sort((a, b) => {
-        const videoQualityA = parseInt(a.qualityLabel) || 0;
-        const videoQualityB = parseInt(b.qualityLabel) || 0;
-        if (videoQualityA !== videoQualityB) {
-          return videoQualityB - videoQualityA;
-        }
-        return (b.audioBitrate || 0) - (a.audioBitrate || 0);
-      })[0];
-
-    // Handle different download modes
-    if (DOWNLOAD_MODE === 'audio-only') {
-      if (audioFormats.length === 0) {
-        throw new Error('No audio formats available for download');
+    // Check if file already exists
+    const possibleExtensions = ['.mp4', '.webm', '.mkv', '.mp3', '.m4a'];
+    let existingFile = null;
+    
+    for (const ext of possibleExtensions) {
+      const testPath = `${outputPath}${ext}`;
+      if (fileExists(testPath)) {
+        existingFile = testPath;
+        break;
       }
-
-      const audioFormat = audioFormats[0];
-      const outputPath = `${safeTitle}.${audioFormat.container}`;
-
-      console.log(`Using highest quality audio (${audioFormat.audioBitrate}kbps)`);
-      await downloadStream(videoUrl, audioFormat, outputPath, 'audio');
-      console.log(`\nDownloaded: ${outputPath}`);
-
-    } else if (DOWNLOAD_MODE === 'video-only') {
-      if (videoFormats.length === 0) {
-        throw new Error('No video formats available for download');
-      }
-
-      const videoFormat = videoFormats[0];
-      const outputPath = `${safeTitle}.${videoFormat.container}`;
-
-      console.log(`Using highest quality video (${videoFormat.qualityLabel})`);
-      await downloadStream(videoUrl, videoFormat, outputPath, 'video');
-      console.log(`\nDownloaded: ${outputPath}`);
-
-    } else if (DOWNLOAD_MODE === 'video+audio') {
-      const outputPath = `${safeTitle}.mp4`;
-
-      // Choose between highest combined quality vs highest video-only quality
-      const highestCombinedQuality = bestCombinedFormat ? parseInt(bestCombinedFormat.qualityLabel) : 0;
-      const highestVideoQuality = videoFormats.length > 0 ? parseInt(videoFormats[0].qualityLabel) : 0;
-
-      if (highestVideoQuality > highestCombinedQuality && videoFormats.length > 0 && audioFormats.length > 0) {
-        console.log(`Using highest quality video (${videoFormats[0].qualityLabel}) + audio (${audioFormats[0].audioBitrate}kbps) - will merge with ffmpeg`);
-
-        // Download video and audio separately
-        const videoPath = `${safeTitle}_video.${videoFormats[0].container}`;
-        const audioPath = `${safeTitle}_audio.${audioFormats[0].container}`;
-
-        await downloadStream(videoUrl, videoFormats[0], videoPath, 'video');
-        await downloadStream(videoUrl, audioFormats[0], audioPath, 'audio');
-
-        // Merge with ffmpeg
-        await mergeWithFFmpeg(videoPath, audioPath, outputPath);
-
-        // Clean up temporary files
-        fs.unlinkSync(videoPath);
-        fs.unlinkSync(audioPath);
-
-        console.log(`\nDownloaded: ${outputPath}`);
-      } else if (bestCombinedFormat) {
-        console.log(`Using combined video+audio format (${bestCombinedFormat.qualityLabel}) - this includes audio`);
-
-        await downloadStream(videoUrl, bestCombinedFormat, outputPath, 'combined');
-        console.log(`\nDownloaded: ${outputPath}`);
-      } else {
-        throw new Error('No suitable format found for download');
-      }
-    } else {
-      throw new Error(`Invalid download mode: ${DOWNLOAD_MODE}. Use 'video+audio', 'video-only', or 'audio-only'`);
     }
+
+    if (existingFile) {
+      console.log(`File already exists: ${existingFile} - skipping download`);
+      return;
+    }
+
+    // Download with yt-dlp
+    await retryWithBackoff(async () => {
+      return await downloadWithYtDlp(videoUrl, outputPath, DOWNLOAD_MODE);
+    });
+
+    console.log(`\nDownloaded: ${outputPath}`);
+
   } catch (error) {
     console.log(`\nError processing video ${index + 1}:`, error.message);
     throw error;
@@ -192,14 +140,15 @@ async function downloadVideo(videoUrl, index) {
 
 async function downloadAllVideos() {
   console.log(`Starting download of ${videos.length} videos...`);
+  console.log(`Using browser cookies for authentication...`);
 
   for (let i = 0; i < videos.length; i++) {
     try {
       await downloadVideo(videos[i], i);
 
       if (i < videos.length - 1) {
-        console.log("Waiting 2 seconds before next download...");
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        console.log("Waiting 5 seconds before next download...");
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     } catch (error) {
       console.log(`Skipping video ${i + 1} due to error:`, error.message);
@@ -212,13 +161,3 @@ async function downloadAllVideos() {
 }
 
 downloadAllVideos().catch(console.error);
-
-// log all video titles
-// videos.forEach(async (videoUrl, index) => {
-//   try {
-//     const info = await ytdl.getInfo(videoUrl);
-//     console.log(`Video ${index + 1} title: ${info.videoDetails.title}`);
-//   } catch (error) {
-//     console.log(`Error fetching title for video ${index + 1}:`, error.message);
-//   }
-// });
