@@ -1,35 +1,15 @@
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { Links } = require("./dhruv_aug_2025.json");
 
 // Download mode configuration
 // Options: 'video+audio', 'video-only', 'audio-only'
 const DOWNLOAD_MODE = 'video+audio';
 
 // dont change this array
-const videos = [
-  // "https://youtu.be/y_3W7sxU6HA",
-  // "https://youtu.be/OvsBn8VNGCo",
-  // "https://youtu.be/fBCAY50fRmY",
-  // "https://youtu.be/_6G46RbyFrE",
-  // "https://youtu.be/89Jil-UwsGI",
-  // "https://youtu.be/f9-ZI4tfr7k",
-  // "https://youtu.be/HO8g64JQeQE",
-  // "https://youtu.be/aHJw7C34VO0",
-  // "https://youtu.be/YRglbJA0K-8",
-  // "https://youtu.be/pOwOXCB6aCA",
-  // "https://youtu.be/a0oMcc_1_Es",
-  // "https://youtu.be/xldtth3rzyc",
-  // "https://youtu.be/BrDn3MA_9Ec",
-  // "https://youtu.be/FNUA4Lkxf_E",
-  // "https://youtu.be/m2UlaxhcyAA",
-  // "https://youtu.be/IqnAwaxmpUc",
-  // "https://youtu.be/bEz9YzNVKFk",
-  "https://youtu.be/hCBSt5kfOWc",
-  "https://youtu.be/9eAJh1lLr8o",
-  "https://youtu.be/9eAJh1lLr8o"
+const videos = Links;
 
-];
 
 // Helper function to check if file exists and is not empty
 function fileExists(filePath) {
@@ -55,24 +35,47 @@ async function getVideoTitle(videoUrl) {
   });
 }
 
+// Helper function to check available formats
+async function checkAvailableFormats(videoUrl) {
+  return new Promise((resolve, reject) => {
+    const command = `yt-dlp --cookies-from-browser chrome --list-formats --no-warnings "${videoUrl}"`;
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.log(`Warning: Could not check formats for ${videoUrl}:`, error.message);
+        resolve(null); // Don't fail, just continue without format info
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
 // Helper function to download with yt-dlp using cookies
 async function downloadWithYtDlp(videoUrl, outputPath, mode) {
   return new Promise((resolve, reject) => {
     let command;
-    
+
     if (mode === 'audio-only') {
       command = `yt-dlp --cookies-from-browser chrome -x --audio-format mp3 --audio-quality 0 -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
     } else if (mode === 'video-only') {
-      command = `yt-dlp --cookies-from-browser chrome -f "best[height<=1080]" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
+      // More flexible format selection with fallbacks
+      command = `yt-dlp --cookies-from-browser chrome -f "best[height<=1080]/best[height<=720]/best" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
     } else { // video+audio
-      command = `yt-dlp --cookies-from-browser chrome -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
+      // More flexible format selection with multiple fallbacks
+      command = `yt-dlp --cookies-from-browser chrome -f "bestvideo[height<=1080]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=1080]/best[height<=720]/best" -o "${outputPath}.%(ext)s" --no-warnings "${videoUrl}"`;
     }
 
     console.log(`Downloading with yt-dlp (using browser cookies)...`);
-    
+
     exec(command, (error, stdout, stderr) => {
       if (error) {
         console.log(`yt-dlp error:`, error.message);
+        if (stderr) {
+          console.log(`yt-dlp stderr:`, stderr);
+        }
+        if (stdout) {
+          console.log(`yt-dlp stdout:`, stdout);
+        }
         reject(error);
         return;
       }
@@ -91,7 +94,7 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 2000) {
       if (attempt === maxRetries) {
         throw error;
       }
-      
+
       // Add random jitter to make requests look more natural
       const jitter = Math.random() * 1000; // 0-1000ms random delay
       const delay = baseDelay * Math.pow(2, attempt - 1) + jitter;
@@ -110,9 +113,18 @@ async function downloadVideo(videoUrl, index) {
     const title = await retryWithBackoff(async () => {
       return await getVideoTitle(videoUrl);
     });
-    
+
     const safeTitle = title.replace(/[<>:"/\\|?*]/g, "_");
     console.log(`Video: ${title}`);
+
+    // Check available formats for debugging
+    console.log(`Checking available formats...`);
+    const formats = await checkAvailableFormats(videoUrl);
+    if (formats) {
+      console.log(`Available formats found for ${videoUrl}`);
+    } else {
+      console.log(`Could not retrieve format information for ${videoUrl}`);
+    }
 
     // Determine output path based on mode
     let outputPath = `${safeTitle}`;
@@ -120,7 +132,7 @@ async function downloadVideo(videoUrl, index) {
     // Check if file already exists
     const possibleExtensions = ['.mp4', '.webm', '.mkv', '.mp3', '.m4a'];
     let existingFile = null;
-    
+
     for (const ext of possibleExtensions) {
       const testPath = `${outputPath}${ext}`;
       if (fileExists(testPath)) {
@@ -143,6 +155,7 @@ async function downloadVideo(videoUrl, index) {
 
   } catch (error) {
     console.log(`\nError processing video ${index + 1}:`, error.message);
+    console.log(`Video URL: ${videoUrl}`);
     throw error;
   }
 }
