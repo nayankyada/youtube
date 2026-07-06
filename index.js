@@ -1,14 +1,21 @@
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const { Links } = require("./dhruv_aug_2025.json");
+const dhruvAug2025 = require("./dhruv_aug_2025.json");
 
 // Download mode configuration
 // Options: 'video+audio', 'video-only', 'audio-only'
 const DOWNLOAD_MODE = 'video+audio';
 
+function getLinksFromInput(input) {
+  if (Array.isArray(input)) return input;
+  if (input && Array.isArray(input.Links)) return input.Links;
+  if (input && Array.isArray(input.links)) return input.links;
+  return [];
+}
+
 // dont change this array
-const videos = Links;
+const videos = getLinksFromInput(dhruvAug2025);
 
 
 // Helper function to check if file exists and is not empty
@@ -161,6 +168,12 @@ async function downloadVideo(videoUrl, index) {
 }
 
 async function downloadAllVideos() {
+  if (!Array.isArray(videos) || videos.length === 0) {
+    throw new Error(
+      'No video links found. Expected `dhruv_aug_2025.json` to be either an array of URLs or an object like `{ "Links": [ ... ] }`.'
+    );
+  }
+
   console.log(`Starting download of ${videos.length} videos...`);
   console.log(`Using browser cookies for authentication...`);
 
